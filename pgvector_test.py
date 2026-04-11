@@ -30,7 +30,7 @@ def fetchall_and_print():
         for id, content, embedding in results:
             print(f"ID: {id}\n Content:{content}\nEmbedding:{embedding}")
 
-create_table()
+# create_table()
 
 
 import ollama
@@ -61,24 +61,27 @@ def get_embedding(text: str) -> list[float]:
 #         )
 #     conn.commit()
  
-fetchall_and_print()
+# fetchall_and_print()
 
 
-def retrieve_context(query, top_k:int= 3) :
+def retrieve_context(query, top_k:int= 5):
+    print("Query >> ", query)
     import numpy as np    
     query_embedding = get_embedding(query)
     query_embedding = np.array(query_embedding)
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT content, 1 - (embedding <=> %s) AS similarity
+            SELECT id, content, 1 - (embedding <=> %s) AS similarity
             FROM documents
-            ORDER BY embedding <=> %s
-            LIMIT 5
-        """, (query_embedding, query_embedding))
+            ORDER BY embedding <=> %s desc
+            LIMIT %s
+        """, (query_embedding, query_embedding, top_k))
 
         results = cur.fetchall()
-        for content, similarity in results:
-            print(f"[{similarity:.3f}] {content}")
+        for id, content, similarity in results:
+            print(f"\n[{similarity:.3f}] -- {id} --- {content}")
 
-query = "How does vector search work in PostgreSQL?"
-retrieve_context(query)
+
+while True:
+    query = input("\nUser: ")
+    retrieve_context(query)
