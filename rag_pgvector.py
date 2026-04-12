@@ -20,15 +20,18 @@ register_vector(conn)
 
 def create_table():
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
                 CREATE TABLE IF NOT EXISTS documents (
                     id SERIAL PRIMARY KEY,
                     content TEXT NOT NULL,
                     embedding VECTOR(768)
                     )
-                    """)
+                    """
+        )
         conn.commit()
     print("postgres.documents table created successfully.")
+
 
 # ----- 1. Data utitlities ------
 def chunk_text(text: str, chunk_size: int = 500) -> List[str]:
@@ -37,6 +40,7 @@ def chunk_text(text: str, chunk_size: int = 500) -> List[str]:
     for i in range(0, len(text), chunk_size):
         chunks.append(text[i : i + chunk_size])
     return chunks
+
 
 # ------- 2. embedding and indexing (The ingestion phase) --------
 def get_embedding(text: str) -> list[float]:
@@ -49,24 +53,30 @@ def get_embedding(text: str) -> list[float]:
         print(f"!!! Error calling ollama for embeddings : {e}")
         return []
 
+
 def delete_all_records():
     with conn.cursor() as cur:
         cur.execute(f"TRUNCATE TABLE {TABLE_NAME}")
         conn.commit()
     print(f"{DB_NAME}.{TABLE_NAME} table truncated successfully.")
 
-def inser_record(content: str, embedding):
+
+def insert_record(content: str, embedding):
     with conn.cursor() as cur:
-        # try:        
-            cur.execute("""
+        # try:
+        cur.execute(
+            """
                         INSERT INTO documents(content, embedding) 
                         VALUES (%s, %s)
-                        """, (content, embedding))
-            conn.commit()
-            print(f"Record inserted successfully in {DB_NAME}.{TABLE_NAME} table")
-        # except Exception as e:
-        #     print(f"Failed to insert record due to:>>  {e}")
-        # conn.commit()
+                        """,
+            (content, embedding),
+        )
+        conn.commit()
+        print(f"Record inserted successfully in {DB_NAME}.{TABLE_NAME} table")
+    # except Exception as e:
+    #     print(f"Failed to insert record due to:>>  {e}")
+    # conn.commit()
+
 
 def index_documents(documents: List[str]):
     """
@@ -75,7 +85,7 @@ def index_documents(documents: List[str]):
     print("\n " + "=" * 50)
     print("STARTING DOCUMENT INDEXING (EMBEDDING PHASE)")
     print("=" * 50)
-    
+
     delete_all_records()
 
     chunked_data = []
@@ -87,12 +97,13 @@ def index_documents(documents: List[str]):
             print(f" Chunk {j+1}/{len(chunks)}: Embedding...")
             embedding = get_embedding(chunk)
             if embedding:
-                inser_record(chunk, embedding)                
+                insert_record(chunk, embedding)
 
 
 def index_pdf_documents(file_path):
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import CharacterTextSplitter
+
     """
     Processes raw documents: chunnks them, generates embeddings
     and stores in Postgres."""
@@ -102,18 +113,16 @@ def index_pdf_documents(file_path):
     pdf_loader = PyPDFLoader(file_path)
     docs = pdf_loader.load()
 
-    splitter = CharacterTextSplitter(separator=" ", 
-                                 chunk_size=500, chunk_overlap=80)
+    splitter = CharacterTextSplitter(separator=" ", chunk_size=500, chunk_overlap=80)
 
-    chunks =splitter.split_documents(docs)
-
+    chunks = splitter.split_documents(docs)
 
     for i, doc in enumerate(chunks):
         print(f"\nProcessing Document {i+1}/{len(chunks)}...")
         print(f" Chunk {i+1}/{len(chunks)}: Embedding...")
         embedding = get_embedding(doc.page_content)
         if embedding:
-            inser_record(doc.page_content, embedding)      
+            inser_record(doc.page_content, embedding)
 
 
 # ------ 3. Retrieval and generation (The Query Phase) -------
@@ -131,45 +140,123 @@ def retrieve_context(query: str, top_k: int = 5) -> List[str]:
     if not query_embedding:
         return []
 
-    # 2. Connect to MongoDB
-   
+    print(f"Searching PGVECTOR for top {top_k} simillar chunks....")
+    import numpy as np
 
-    # NOTE: For true vector search, you should use a dedicated vector index
-    # (like HNSW or specialized Atlas feature). Here, we simulate similarity
-    # by fetching top documents based on a simple proximity measure
-    # (or, in a real scenario, using $vectorSearch).
-    print(f"Searching MongoDB for top {top_k} simillar chunks....")
-    # *** Placeholder for Vector Search ***
-    # Since standard pymongo requires specific vector indexing
-    # (e.g., Atlas/Wrangler), we will simulate fetching top results
-    # by selecting random chunks for demonstration clarity.
-    # In a production system, this query would use $vectorSearch.
-
-    # Realistic (but simplified) MongoDB retrieval simulation:
-    import numpy as np    
     query_embedding = get_embedding(query)
     query_embedding = np.array(query_embedding)
+
+    semantic_results = get_semantic_search_results(query_embedding, top_k)
+    full_text_search_result = get_full_text_search_results(query, top_k)
+
+    return semantic_results + full_text_search_result
+
+
+def retrieve_context_from_queries(queries: List[str], top_k: int = 5) -> List[str]:
+    print("\n" + "=" * 50)
+    print("STEP 1: Retrieval context from multiple queries")
+    print("=" * 50)
+
+    results = []
+    for query in queries:
+        # 1. Embed the query
+        query_embedding = get_embedding(query)
+        if not query_embedding:
+            return []
+
+        print(f"Searching PGVECTOR for top {top_k} simillar chunks....")
+        import numpy as np
+
+        query_embedding = get_embedding(query)
+        query_embedding = np.array(query_embedding)
+
+        semantic_results = get_semantic_search_results(query_embedding, top_k)
+        full_text_search_result = get_full_text_search_results(query, top_k)
+        results.append(semantic_results + full_text_search_result)
+    return results
+
+
+def get_semantic_search_results(query_embedding, top_k):
+    """------------ Retriveing By Semantic Seach Start --------------"""
     with conn.cursor() as cur:
-        try:        
-            cur.execute("""
+        try:
+            cur.execute(
+                """
                 SELECT id, content, 1 - (embedding <-> %s) AS similarity
                 FROM documents
                 ORDER BY embedding <-> %s desc
                 LIMIT %s
-            """, (query_embedding, query_embedding, top_k))       
+            """,
+                (query_embedding, query_embedding, top_k),
+            )
             print(f"Context retrieved successfully...")
-        
-            
+
             context_list = []
             for row in cur.fetchall():
                 context_list.append(row)
                 print(f"\n ID : {row[0]}\nContent: {row[1]}\nScore: {row[2]}")
-            
+
             return context_list
         except Exception as e:
-            print(f"Failed to insert record due to:>>  {e}")
+            print(f"get_semantic_search_results: Failed to fetch record due to:>>  {e}")
+    """ ------------ Retriveing By Semantic Seach End --------------"""
     return []
-        
+
+
+def get_full_text_search_results(query, top_k):
+    """------------ Retriveing By Full Text Seach Start --------------"""
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """SELECT id, content FROM documents, plainto_tsquery('english', %s) query WHERE to_tsvector('english', content) @@ query 
+                    ORDER BY ts_rank_cd(to_tsvector('english', content), query) DESC LIMIT %s
+                """,
+                (query, top_k),
+            )
+            print(f"Full text retrieved successfully...")
+
+            context_list = []
+            for row in cur.fetchall():
+                context_list.append(row)
+                print(f"\n ID : {row[0]}\nContent: {row[1]}")
+
+            return context_list
+        except Exception as e:
+            print(
+                f"get_full_text_search_results: Failed to fetch record due to:>>  {e}"
+            )
+    """ ------------ Retriveing By Full Text Seach End --------------"""
+    return []
+
+
+def generate_multiple_questions_from_prompt(query: str) -> List[str]:
+    """------generate_multiple_questions_from_prompt -----------"""
+
+    print("\n" + "=" * 50)
+    print("STEP : generate at most 3 question from users entered query")
+    print("=" * 50)
+    prompt = f"""
+    You are the logical reasoner and responsble to understand semantics to 
+    generate at most 3 questions from users entered query which would be feed 
+    to pgvector database to retrieve context.
+    
+    QUESTION: {query}
+
+    ANSWER:
+    """
+
+    # 2. call ollama LLM
+    try:
+        response = ollama.generate(
+            model=GENERATION_MODEL,
+            prompt=prompt,
+            options={"temperature": 0.1, "num_predict": MAX_TOKENS},
+        )
+        print(f"generate_multiple_questions_from_prompt: questions {response["response"]}")
+        return response["response"].strip()
+    except Exception as e:
+        f"!!! Error generating questions via ollama: {e}"
+    return []
 
 
 def generate_answer(query: str, context: List[str]) -> str:
@@ -182,7 +269,7 @@ def generate_answer(query: str, context: List[str]) -> str:
     # 1. construct the prompt
     context_string = "\n---\n".join(context)
     prompt = f"""
-    You are an expert question-answering system. Your task is to answer the user's question
+    You are an expert Financial Figure. Your task is to answer the user's question
     based ONLY on the context provided below. If the context does not contain the answer, 
     you must state clearly that the information is not available.
 
@@ -227,15 +314,15 @@ if __name__ == "__main__":
         """,
     ]
 
-    create_table()
+    # create_table()
 
     # ====================================================
     # PHASE 1: INDEXING (Run this once, or when data changes)
     # ====================================================
-    #index_documents(DOCUMEN_DATASET)
-    
-    pdf_file_path = "./dataset/mediarelease-en.pdf"
-    index_pdf_documents(pdf_file_path)
+    # index_documents(DOCUMEN_DATASET)
+
+    # pdf_file_path = "./dataset/mediarelease-en.pdf"
+    # index_pdf_documents(pdf_file_path)
 
     # ====================================================
     # PHASE 2: QUERYING (The actual RAG process)
@@ -243,14 +330,18 @@ if __name__ == "__main__":
     while True:
         user_query = input("\nAsk your question: ")
 
+        # questions = generate_multiple_questions_from_prompt(user_query)
+        # print("\nQuestions generated from entered queries")
+        # print(questions)
+        # print("\n")
         # 1. retrieve context
         retrieved_context = retrieve_context(user_query)
         context_content = []
         if retrieved_context:
             print("\n [DEBUG] Retrived context snippets:")
             for i, context in enumerate(retrieved_context):
-                context_content.append(context[1]);
-                #print(f"-----Context {i+1} ------\n {context[1][:100]}...")
+                context_content.append(context[1])
+                # print(f"-----Context {i+1} ------\n {context[1][:100]}...")
 
             # 2. generate ansert
             final_answer = generate_answer(user_query, context_content)
