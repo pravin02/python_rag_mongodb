@@ -7,4 +7,3 @@ while True:
         messages= [{"role": "Teacher", "content": query}]
     );
     print("\n",model_response.message.content);
-
